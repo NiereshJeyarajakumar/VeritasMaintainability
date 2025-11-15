@@ -1,0 +1,293 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Maintainability (Lognormal PDF) — Veritas Reliability</title>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+<style>
+  body { 
+    font-family: Arial, sans-serif;
+    background:#fff;
+    color:#000;
+    max-width:900px;
+    margin:40px auto;
+  }
+
+  /* ===== VERITAS HEADER STYLE (replaces old black header) ===== */
+  .header {
+    background:#0B1C36;
+    color:#C2965B;
+    font-weight:700;
+    text-align:center;
+    padding:12px;
+    border-radius:10px 10px 0 0;
+    font-size:17px;
+    margin:-20px -20px 16px -20px;
+  }
+
+  /* ===== CARD ===== */
+  .card { 
+    border:1px solid #0B1C36;
+    border-radius:10px;
+    background:#fff;
+    padding:20px;
+    margin-top:20px;
+    overflow:hidden;
+  }
+
+  /* ===== INPUT LABELS ===== */
+  label { 
+    font-weight:600;
+    color:#0B1C36;
+    display:block;
+    margin:8px 0 5px;
+  }
+
+  /* ===== INPUTS ===== */
+  textarea, select, input {
+    border:1px solid #0B1C36;
+    border-radius:8px;
+    padding:10px 14px;
+    font-size:14px;
+    width:100%;
+    box-sizing:border-box;
+  }
+
+  /* ===== BUTTONS — VERITAS STYLE ===== */
+  button {
+    cursor:pointer;
+    border-radius:8px;
+    height:44px;
+    padding:8px 16px;
+    font-size:14px;
+    font-weight:400; /* no bold */
+    border:1px solid #0B1C36;
+  }
+
+  #analyze {
+    background:#C2965B;   /* gold */
+    color:#0B1C36;        /* dark */
+  }
+
+  #exportPDF {
+    background:#0B1C36;   /* dark */
+    color:#C2965B;        /* gold */
+  }
+
+  button:hover { opacity:.85; }
+
+  /* ===== TABS — VERITAS STYLE ===== */
+  .tabs { 
+    display:flex; 
+    gap:8px; 
+    margin-top:16px; 
+  }
+
+  .tabs button {
+    background:#C2965B;
+    color:#0B1C36;
+    border-radius:999px;
+    padding:8px 16px;
+    border:1px solid #0B1C36;
+  }
+
+  .tabs button.active {
+    background:#0B1C36;
+    color:#C2965B;
+  }
+
+  .button-row { display:flex; gap:10px; margin-top:12px; }
+  .result { margin-top:10px; font-weight:700; font-size:15px; }
+  .flex-row { display:flex; gap:12px; align-items:end; margin-top:8px; }
+
+  /* ===== CHARTS ===== */
+  canvas { 
+    margin-top:20px; 
+    width:100%; 
+    height:340px; 
+  }
+</style>
+</head>
+
+<body>
+
+<div class="card" id="analysisCard">
+
+  <!-- NEW VERITAS HEADER -->
+  <div class="header">Maintainability (Lognormal PDF)</div>
+
+  <label for="dataInput">Enter Time to Repair values (comma or space separated):</label>
+  <textarea id="dataInput" rows="4" placeholder="e.g. 5, 7.2, 8, 9.5, 11, 15, 20"></textarea>
+
+  <div class="flex-row">
+    <div style="flex:1;">
+      <label for="units">Units</label>
+      <select id="units">
+        <option value="hours">Hours</option>
+        <option value="minutes">Minutes</option>
+      </select>
+    </div>
+
+    <div style="flex:1;">
+      <label for="binMode">Histogram Mode</label>
+      <select id="binMode">
+        <option value="bins">Specify Number of Bins</option>
+        <option value="width">Specify Bin Width</option>
+      </select>
+    </div>
+
+    <div style="flex:1;">
+      <label for="binValue">Value</label>
+      <input type="number" id="binValue" placeholder="e.g. 10 or 2.5">
+    </div>
+  </div>
+
+  <div class="button-row">
+    <button id="analyze">Analyze</button>
+    <button id="exportPDF">Download as PDF</button>
+  </div>
+
+  <div id="summary" class="result"></div>
+
+  <div class="tabs">
+    <button class="active" data-target="chartHist">Histogram</button>
+    <button data-target="chartM">Maintainability PDF f(t)</button>
+  </div>
+
+  <canvas id="chartHist"></canvas>
+  <canvas id="chartM"></canvas>
+
+</div>
+
+<script>
+function parseNumbers(str){
+  return (str||"").split(/[\s,]+/).map(Number).filter(v=>Number.isFinite(v) && v>0);
+}
+function mean(a){ return a.reduce((s,v)=>s+v,0)/a.length; }
+function stdev(a){ if(a.length<2) return 0; const m=mean(a); return Math.sqrt(a.reduce((s,v)=>s+(v-m)**2,0)/(a.length-1)); }
+
+let chartH=null, chartM=null;
+
+/* ---------- Initialize Blank Charts ---------- */
+function initBlankCharts(){
+  const ctxH=document.getElementById('chartHist');
+  const ctxM=document.getElementById('chartM');
+
+  chartH = new Chart(ctxH,{
+    type:'bar',
+    data:{ labels:[], datasets:[{ data:[], backgroundColor:'#0B1C36' }] },
+    options:{
+      responsive:true,
+      scales:{
+        x:{ title:{display:true,text:'Repair Time Bins'}, grid:{ color:'rgba(0,0,0,0.1)' } },
+        y:{ title:{display:true,text:'Frequency'}, beginAtZero:true, grid:{ color:'rgba(0,0,0,0.1)' } }
+      },
+      plugins:{ legend:{ display:false } }
+    }
+  });
+
+  chartM = new Chart(ctxM,{
+    type:'line',
+    data:{ datasets:[{ data:[], borderColor:'#C2965B', borderWidth:2, fill:false }] },
+    options:{
+      responsive:true,
+      scales:{
+        x:{ type:'linear', title:{display:true,text:'Repair Time'}, grid:{ color:'rgba(0,0,0,0.1)' } },
+        y:{ title:{display:true,text:'Probability Density f(t)'}, beginAtZero:true, grid:{ color:'rgba(0,0,0,0.1)' } }
+      },
+      plugins:{ legend:{ display:false } }
+    }
+  });
+}
+initBlankCharts();
+
+/* ---------- Update Charts After Analysis ---------- */
+function makeHistogramChart(binLabels, counts, unit){
+  chartH.data.labels = binLabels;
+  chartH.data.datasets[0].data = counts;
+  chartH.options.scales.x.title.text = `Repair Time Bins (${unit})`;
+  chartH.update();
+}
+
+function makeMaintainabilityChart(mu, sigma, rangeMin, rangeMax, unit){
+  const eps=1e-12;
+  sigma=Math.max(sigma,eps);
+  const lo=0;
+  let hi=rangeMax*1.2;
+  if(!(hi>lo)) hi=lo+Math.max(rangeMax*0.1,0.1);
+
+  const nPoints=300, X=[], Y=[];
+  for(let i=0;i<nPoints;i++){
+    const t=lo+(hi-lo)*(i/(nPoints-1));
+    const pdf=t>0?(1/(t*sigma*Math.sqrt(2*Math.PI)))*Math.exp(-((Math.log(t)-mu)**2)/(2*sigma*sigma)):0;
+    X.push(t); Y.push(pdf);
+  }
+
+  chartM.data.datasets[0].data = X.map((t,i)=>({x:t,y:Y[i]}));
+  chartM.options.scales.x.title.text = `Repair Time (${unit})`;
+  chartM.update();
+}
+
+/* ---------- Analyze ---------- */
+document.getElementById('analyze').addEventListener('click',()=>{
+  try{
+    const data=parseNumbers(document.getElementById('dataInput').value).sort((a,b)=>a-b);
+    if(data.length<3) throw new Error('Enter at least 3 valid repair times.');
+
+    const unit=document.getElementById('units').value;
+    const ln=data.map(Math.log);
+    const mu=mean(ln), sigma=stdev(ln);
+    const median=Math.exp(mu);
+    const mttr=Math.exp(mu+0.5*sigma*sigma);
+
+    document.getElementById('summary').textContent=
+      `n=${data.length} | μ=${mu.toFixed(4)} | σ=${sigma.toFixed(4)} | Median=${median.toFixed(3)} ${unit} | MTTR=${mttr.toFixed(3)} ${unit}`;
+
+    const min=data[0], max=data[data.length-1];
+    const mode=document.getElementById('binMode').value;
+    const val=parseFloat(document.getElementById('binValue').value);
+    let nBins=10, binWidth;
+
+    if(mode==='bins' && val>0){ nBins=Math.max(1,Math.round(val)); binWidth=(max-min)/nBins; }
+    else if(mode==='width' && val>0){ binWidth=val; nBins=Math.max(1,Math.ceil((max-min)/binWidth)); }
+    else { nBins=10; binWidth=(max-min)/nBins; }
+
+    const bins=Array.from({length:nBins+1},(_,i)=>min+i*binWidth);
+    const binLabels=bins.slice(0,-1).map((b,i)=>`${b.toFixed(1)}–${(b+binWidth).toFixed(1)}`);
+    const counts=new Array(nBins).fill(0);
+    for(const v of data){
+      let idx=Math.floor((v-min)/binWidth);
+      if(idx<0) idx=0; if(idx>=nBins) idx=nBins-1;
+      counts[idx]++;
+    }
+
+    makeHistogramChart(binLabels, counts, unit);
+    makeMaintainabilityChart(mu, sigma, min, max, unit);
+    showChart(document.querySelector('.tabs button.active').dataset.target);
+  }catch(e){ alert(e.message||e); }
+});
+
+/* ---------- Toggle Charts ---------- */
+function showChart(id){
+  document.getElementById('chartHist').style.display = (id === 'chartHist') ? 'block' : 'none';
+  document.getElementById('chartM').style.display = (id === 'chartM') ? 'block' : 'none';
+}
+
+document.querySelectorAll('.tabs button').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    showChart(btn.dataset.target);
+  });
+});
+
+showChart('chartHist');
+</script>
+
+</body>
+</html>
+
